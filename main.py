@@ -11,6 +11,12 @@ origins = [
 ]
 
 
+from app.routers.security import (
+    market_data)
+
+app.include_router(market_data.router)
+
+
 ### Hello world
 @app.get("/")
 async def start_page():

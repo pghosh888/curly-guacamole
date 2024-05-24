@@ -10,15 +10,15 @@ from typing import Literal, Optional, Union, List
 
 
 router = APIRouter(
-    prefix="/security/price",
-    tags=["Security price"],
+    prefix="/security",
+    tags=["Security market data"],
 )
 prefix = f"app/queries{router.prefix}/"
 
 @router.get("/price/{ticker}")
-def get_price(
+def price(
     ticker: constr(min_length=1, max_length=10),
     auth = Depends(is_authorized),
 ):  
-    
-    return yf.download('AAPL')[ticker]['Close_Price'].to_dict(orient="split")
+    #print(yf.download(ticker))
+    return yf.download(ticker)[['Adj Close']].to_dict(orient="split")
