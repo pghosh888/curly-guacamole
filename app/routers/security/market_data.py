@@ -22,3 +22,12 @@ def price(
 ):  
     #print(yf.download(ticker))
     return yf.download(ticker)[['Adj Close']].to_dict(orient="split")
+
+
+@router.get("/volume/{ticker}")
+def price(
+    ticker: constr(min_length=1, max_length=10),
+    auth = Depends(is_authorized),
+):  
+    #print(yf.download(ticker))
+    return yf.download(ticker)[['Volume']].to_dict(orient="split")
