@@ -11,7 +11,7 @@ origins = [
 ]
 
 
-from app.routers.security import (
+from app.routers.security_price import (
     market_data)
 
 app.include_router(market_data.router)
