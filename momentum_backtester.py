@@ -143,13 +143,15 @@ def create_momentum_portfolio(prices_df, lookback_period, rebalance_freq, top_n_
             if not available_stocks:
                 continue
                 
-            stock_returns = period_prices.loc[date, available_stocks].pct_change().mean()
+            # Calculate daily returns using pct_change on previous day's prices
+            prev_date = period_prices.index[period_prices.index < date][-1]
+            stock_returns = (period_prices.loc[date, available_stocks] / period_prices.loc[prev_date, available_stocks] - 1).mean()
             current_value *= (1 + stock_returns)
             
             # Calculate benchmark (equal-weighted all stocks)
-            available_bench_stocks = [col for col in period_prices.columns if not pd.isna(period_prices.loc[date, col])]
+            available_bench_stocks = [col for col in period_prices.columns if not pd.isna(period_prices.loc[date, col]) and not pd.isna(period_prices.loc[prev_date, col])]
             if available_bench_stocks:
-                bench_return = period_prices.loc[date, available_bench_stocks].pct_change().mean()
+                bench_return = (period_prices.loc[date, available_bench_stocks] / period_prices.loc[prev_date, available_bench_stocks] - 1).mean()
                 benchmark_value *= (1 + bench_return)
             
             portfolio_values.append(current_value)
@@ -187,10 +189,28 @@ def calculate_performance_metrics(performance_df):
     total_return_port = (performance_df['Portfolio Value'].iloc[-1] / performance_df['Portfolio Value'].iloc[0]) - 1
     total_return_bench = (performance_df['Benchmark Value'].iloc[-1] / performance_df['Benchmark Value'].iloc[0]) - 1
     
-    # Annualized returns
+    # FIX: Lines 147 and 153 - Handle potential overflows in annualized return calculations
+    # Annualized returns with safeguards against overflow
     days = (performance_df.index[-1] - performance_df.index[0]).days
-    ann_return_port = (1 + total_return_port) ** (365 / max(days, 1)) - 1
-    ann_return_bench = (1 + total_return_bench) ** (365 / max(days, 1)) - 1
+    if days <= 0:
+        ann_return_port = 0
+        ann_return_bench = 0
+    else:
+        # Use np.log for safer calculation with large numbers
+        # annualized_return = exp(log(1 + total_return) * (365 / days)) - 1
+        try:
+            ann_return_port = np.exp(np.log1p(total_return_port) * (365.0 / days)) - 1
+        except (OverflowError, FloatingPointError, ValueError):
+            ann_return_port = 0 if total_return_port < 0 else float('inf')
+            
+        try:
+            ann_return_bench = np.exp(np.log1p(total_return_bench) * (365.0 / days)) - 1
+        except (OverflowError, FloatingPointError, ValueError):
+            ann_return_bench = 0 if total_return_bench < 0 else float('inf')
+    
+    # Cap extreme values to prevent display issues
+    ann_return_port = min(max(ann_return_port, -1), 100)  # Cap at 10,000%
+    ann_return_bench = min(max(ann_return_bench, -1), 100)  # Cap at 10,000%
     
     # Volatility
     ann_vol_port = portfolio_returns.std() * np.sqrt(252) if len(portfolio_returns) > 0 else 0
