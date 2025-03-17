@@ -257,7 +257,7 @@ def main():
     
     # Input for tickers
     ticker_input = st.sidebar.text_area("Enter ticker symbols (comma-separated):", 
-                                       value="AAPL.US,MSFT.US,AMZN.US,GOOGL.US,META.US,TSLA.US,NVDA.US,JNJ.US,V.US,PG.US")
+                                       value="AAPL.US,MSFT.US,AMZN.US,GOOGL.US,META.US,TSLA.US,NVDA.US,JNJ.US,V.US,PG.US,XOM.US,HD.US,ABBV.US,KO.US,CVX.US,PM.US,ABT.US,CSCO.US,WMT.US,IBM.US,TMUS.US")
     
     tickers = [ticker.strip() for ticker in ticker_input.split(',') if ticker.strip()]
     
