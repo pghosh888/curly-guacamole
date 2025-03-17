@@ -1,274 +1,210 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
+import requests
 import matplotlib.pyplot as plt
-from pandas.tseries.offsets import MonthEnd
+import datetime
+from dateutil.relativedelta import relativedelta
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-def calculate_momentum(prices_df, lookback_period):
-    """Calculate momentum returns for a given lookback period."""
-    momentum = prices_df.pct_change(lookback_period).dropna()
-    return momentum
+# Set page config
+st.set_page_config(page_title="Momentum Factor Backtesting Tool", layout="wide")
 
-def get_stock_data(ticker_list, start_date, end_date):
-    """Fetch historical price data for tickers from Yahoo Finance."""
-    data = {}
-    for ticker in ticker_list:
-        print(ticker)
-        try:
-            ticker_data = yf.download(ticker, start=start_date, end=end_date)
-            if not ticker_data.empty:
-                data[ticker] = ticker_data['Adj Close']
-        except Exception as e:
-            st.error(f"Error fetching data for {ticker}: {e}")
+# API Key - in production, this should be stored more securely
+API_KEY = "666bf36deeedc4.45950582"
+
+# Function to fetch data from EODHD
+def fetch_eod_data(ticker, start_date, end_date):
+    start_str = start_date.strftime('%Y-%m-%d')
+    end_str = end_date.strftime('%Y-%m-%d')
+    url = f'https://eodhd.com/api/eod/{ticker}?api_token={API_KEY}&fmt=json&from={start_str}&to={end_str}'
     
-    if data:
-        prices_df = pd.DataFrame(data)
-        return prices_df
-    else:
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            df = pd.DataFrame(data)
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+            return df
+        else:
+            st.error(f"Error fetching data: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
         return None
 
-def create_momentum_portfolio(prices_df, lookback_period, rebalance_freq, top_n_pct, start_date, end_date):
-    """Create a portfolio based on momentum strategy."""
-    # Calculate momentum at each rebalance date
-    current_date = pd.to_datetime(start_date)
-    end_date = pd.to_datetime(end_date)
+# Calculate momentum
+def calculate_momentum(df, lookback_period):
+    """
+    Calculate momentum factor for the given lookback period
+    Normalized by volatility
+    """
+    # Calculate returns
+    df['return'] = df['adjusted_close'].pct_change()
     
-    # Need enough data for lookback
-    first_possible_date = prices_df.index[0] + pd.DateOffset(months=lookback_period)
-    if current_date < first_possible_date:
-        current_date = first_possible_date
+    # Calculate momentum (using price ratio instead of return)
+    df[f'momentum_{lookback_period}m'] = df['adjusted_close'] / df['adjusted_close'].shift(lookback_period)
     
-    portfolio_returns = []
-    rebalance_dates = []
-    holdings_history = {}
+    # Calculate volatility (standard deviation of returns over the same period)
+    df[f'volatility_{lookback_period}m'] = df['return'].rolling(window=lookback_period).std()
     
-    while current_date <= end_date:
-        # Find the closest actual trading day
-        closest_date = prices_df.index[prices_df.index <= current_date][-1]
-        
-        # Calculate momentum up to this date
-        historical_data = prices_df.loc[:closest_date]
-        momentum_returns = calculate_momentum(historical_data, lookback_period)
-        
-        if not momentum_returns.empty and len(momentum_returns.index) > 0:
-            # Get latest momentum values
-            latest_momentum = momentum_returns.iloc[-1]
-            
-            # Select top N% stocks based on momentum
-            top_n = max(1, int(len(latest_momentum) * (top_n_pct / 100)))
-            top_stocks = latest_momentum.nlargest(top_n).index.tolist()
-            
-            # Record holdings for this rebalance date
-            holdings_history[closest_date] = top_stocks
-            rebalance_dates.append(closest_date)
-        
-        # Move to next rebalance date
-        current_date += pd.DateOffset(months=rebalance_freq)
+    # Normalize momentum by volatility
+    df[f'momentum_{lookback_period}m_norm'] = df[f'momentum_{lookback_period}m'] / df[f'volatility_{lookback_period}m']
     
-    # Calculate portfolio performance
+    return df
+
+# Backtest strategy
+def backtest_momentum_strategy(df, lookback_period, rebalance_period=1, top_pct=0.2):
+    """
+    Backtest a momentum strategy
+    lookback_period: Period in months to calculate momentum
+    rebalance_period: How often to rebalance the portfolio (in months)
+    top_pct: Percentage of top momentum stocks to include in the portfolio
+    """
+    # Make sure we have momentum data calculated
+    if f'momentum_{lookback_period}m_norm' not in df.columns:
+        df = calculate_momentum(df, lookback_period)
+    
+    # Create a copy of the dataframe with only month-end dates
+    monthly_df = df.resample('M').last()
+    
+    # Initialize portfolio
+    portfolio_value = 100.0  # Starting with $100
     portfolio_values = []
-    current_value = 100  # Start with $100
-    benchmark_values = []
-    benchmark_value = 100  # Start with $100
-    
     dates = []
     
-    for i in range(len(rebalance_dates)):
-        current_date = rebalance_dates[i]
+    # Loop through each rebalance date
+    for i in range(rebalance_period, len(monthly_df), rebalance_period):
+        # Get the current month data
+        current_date = monthly_df.index[i]
         
-        # Determine end date for this period
-        if i < len(rebalance_dates) - 1:
-            end_date = rebalance_dates[i + 1]
-        else:
-            end_date = prices_df.index[-1]
+        # Get previous momentum values
+        momentum_value = monthly_df.iloc[i][f'momentum_{lookback_period}m_norm']
         
-        # Get returns for this period
-        period_prices = prices_df.loc[current_date:end_date]
+        # Calculate return for the next period
+        if i + rebalance_period < len(monthly_df):
+            future_return = monthly_df.iloc[i+rebalance_period]['adjusted_close'] / monthly_df.iloc[i]['adjusted_close'] - 1
+            portfolio_value *= (1 + future_return)
         
-        # Skip if we don't have enough data
-        if len(period_prices) <= 1:
-            continue
-        
-        # Calculate portfolio returns for this period
-        portfolio_stocks = holdings_history[current_date]
-        
-        # Calculate daily returns
-        for date in period_prices.index[1:]:  # Skip the first day
-            stock_returns = period_prices.loc[date, portfolio_stocks].pct_change().mean()
-            current_value *= (1 + stock_returns)
-            
-            # Calculate benchmark (equal-weighted all stocks)
-            bench_return = period_prices.loc[date].pct_change().mean()
-            benchmark_value *= (1 + bench_return)
-            
-            portfolio_values.append(current_value)
-            benchmark_values.append(benchmark_value)
-            dates.append(date)
+        portfolio_values.append(portfolio_value)
+        dates.append(current_date)
     
-    # Create performance dataframe
-    performance_df = pd.DataFrame({
-        'Date': dates,
-        'Portfolio Value': portfolio_values,
-        'Benchmark Value': benchmark_values
-    }).set_index('Date')
+    # Create a dataframe with portfolio values
+    portfolio_df = pd.DataFrame({
+        'date': dates,
+        'portfolio_value': portfolio_values
+    })
+    portfolio_df.set_index('date', inplace=True)
     
-    return performance_df, holdings_history
+    # Calculate benchmark (buy and hold)
+    benchmark_start = monthly_df.iloc[rebalance_period]['adjusted_close']
+    benchmark_end = monthly_df.iloc[-1]['adjusted_close']
+    benchmark_return = benchmark_end / benchmark_start
+    
+    # Calculate performance metrics
+    total_return = portfolio_value / 100.0 - 1
+    num_years = len(portfolio_values) * rebalance_period / 12
+    annualized_return = (1 + total_return) ** (1 / num_years) - 1
+    
+    # Calculate volatility
+    portfolio_returns = pd.Series(portfolio_values).pct_change().dropna()
+    volatility = portfolio_returns.std() * np.sqrt(12 / rebalance_period)
+    
+    # Calculate Sharpe ratio (assuming risk-free rate of 0)
+    sharpe_ratio = annualized_return / volatility if volatility > 0 else 0
+    
+    return portfolio_df, total_return, annualized_return, volatility, sharpe_ratio, benchmark_return
 
-def calculate_performance_metrics(performance_df):
-    """Calculate key performance metrics for the portfolio."""
-    portfolio_returns = performance_df['Portfolio Value'].pct_change().dropna()
-    benchmark_returns = performance_df['Benchmark Value'].pct_change().dropna()
-    
-    # Calculate metrics
-    total_return_port = (performance_df['Portfolio Value'].iloc[-1] / performance_df['Portfolio Value'].iloc[0]) - 1
-    total_return_bench = (performance_df['Benchmark Value'].iloc[-1] / performance_df['Benchmark Value'].iloc[0]) - 1
-    
-    # Annualized returns
-    days = (performance_df.index[-1] - performance_df.index[0]).days
-    ann_return_port = (1 + total_return_port) ** (365 / days) - 1
-    ann_return_bench = (1 + total_return_bench) ** (365 / days) - 1
-    
-    # Volatility
-    ann_vol_port = portfolio_returns.std() * np.sqrt(252)
-    ann_vol_bench = benchmark_returns.std() * np.sqrt(252)
-    
-    # Sharpe ratio (assuming risk-free rate of 0 for simplicity)
-    sharpe_port = ann_return_port / ann_vol_port if ann_vol_port > 0 else 0
-    sharpe_bench = ann_return_bench / ann_vol_bench if ann_vol_bench > 0 else 0
-    
-    # Maximum drawdown
-    cum_returns_port = (1 + portfolio_returns).cumprod()
-    running_max_port = cum_returns_port.cummax()
-    drawdown_port = (cum_returns_port / running_max_port) - 1
-    max_drawdown_port = drawdown_port.min()
-    
-    cum_returns_bench = (1 + benchmark_returns).cumprod()
-    running_max_bench = cum_returns_bench.cummax()
-    drawdown_bench = (cum_returns_bench / running_max_bench) - 1
-    max_drawdown_bench = drawdown_bench.min()
-    
-    metrics = {
-        'Total Return': [total_return_port * 100, total_return_bench * 100],
-        'Annualized Return (%)': [ann_return_port * 100, ann_return_bench * 100],
-        'Annualized Volatility (%)': [ann_vol_port * 100, ann_vol_bench * 100],
-        'Sharpe Ratio': [sharpe_port, sharpe_bench],
-        'Max Drawdown (%)': [max_drawdown_port * 100, max_drawdown_bench * 100]
-    }
-    
-    return pd.DataFrame(metrics, index=['Portfolio', 'Benchmark'])
-
+# Main app
 def main():
-    st.title("Momentum Strategy Backtester")
+    st.title("Momentum Factor Backtesting Tool")
     
-    st.sidebar.header("Strategy Parameters")
+    st.sidebar.header("Parameters")
     
-    # Input for tickers
-    ticker_input = st.sidebar.text_area("Enter ticker symbols (comma-separated):", 
-                                       value="AAPL,MSFT,AMZN,GOOGL,META,TSLA,NVDA,JNJ,V,PG")
-    
-    tickers = [ticker.strip() for ticker in ticker_input.split(',') if ticker.strip()]
+    # Input parameters
+    ticker = st.sidebar.text_input("Ticker Symbol", "SPY")
     
     # Date range
-    col1, col2 = st.sidebar.columns(2)
-    start_date = col1.date_input("Start Date", datetime(2018, 1, 1))
-    end_date = col2.date_input("End Date", datetime.now())
+    today = datetime.date.today()
+    years_ago = today - relativedelta(years=10)
     
-    # Lookback period
-    lookback_period = st.sidebar.radio("Momentum Lookback Period", [6, 12], 
-                                      format_func=lambda x: f"{x} Months")
+    start_date = st.sidebar.date_input("Start Date", years_ago)
+    end_date = st.sidebar.date_input("End Date", today)
     
-    # Rebalance frequency
-    rebalance_freq = st.sidebar.slider("Rebalance Frequency (Months)", 1, 12, 3)
+    # Convert to datetime
+    start_date = datetime.datetime.combine(start_date, datetime.datetime.min.time())
+    end_date = datetime.datetime.combine(end_date, datetime.datetime.min.time())
     
-    # Portfolio size
-    top_n_pct = st.sidebar.slider("Top Momentum Stocks (%)", 10, 50, 30)
+    # Strategy parameters
+    momentum_option = st.sidebar.selectbox("Momentum Period", ["6 Month", "12 Month"])
+    lookback_period = 6 if momentum_option == "6 Month" else 12
     
-    # Backtest button
+    rebalance_period = st.sidebar.slider("Rebalance Period (Months)", 1, 12, 1)
+    
+    # Fetch data button
     if st.sidebar.button("Run Backtest"):
-        with st.spinner('Fetching data and running backtest...'):
-            # Extend start date to include lookback period
-            adjusted_start_date = start_date - timedelta(days=lookback_period * 31)
+        # Adjust start date to include lookback period
+        adjusted_start = start_date - relativedelta(months=lookback_period)
+        
+        # Display the loading message
+        with st.spinner(f"Fetching data for {ticker}..."):
+            # Fetch data
+            df = fetch_eod_data(ticker, adjusted_start, end_date)
             
-            # Get stock data
-            prices_df = get_stock_data(tickers, adjusted_start_date, end_date)
-            
-            if prices_df is not None and not prices_df.empty:
-                st.success(f"Data fetched for {len(prices_df.columns)} stocks")
+            if df is not None and not df.empty:
+                # Calculate momentum
+                df = calculate_momentum(df, lookback_period)
+                
+                # Display raw data
+                with st.expander("Raw Data"):
+                    st.dataframe(df)
                 
                 # Run backtest
-                performance_df, holdings_history = create_momentum_portfolio(
-                    prices_df, 
-                    lookback_period, 
-                    rebalance_freq, 
-                    top_n_pct, 
-                    start_date, 
-                    end_date
-                )
+                portfolio_df, total_return, annualized_return, volatility, sharpe_ratio, benchmark_return = backtest_momentum_strategy(
+                    df, lookback_period, rebalance_period)
                 
                 # Display results
-                st.header("Backtest Results")
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Total Return", f"{total_return:.2%}")
+                col2.metric("Annualized Return", f"{annualized_return:.2%}")
+                col3.metric("Volatility", f"{volatility:.2%}")
+                col4.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
                 
-                # Performance chart
-                st.subheader("Portfolio Performance")
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=performance_df.index, 
-                                         y=performance_df['Portfolio Value'], 
-                                         name="Momentum Portfolio"))
-                fig.add_trace(go.Scatter(x=performance_df.index, 
-                                         y=performance_df['Benchmark Value'], 
-                                         name="Equal-Weight Benchmark"))
-                fig.update_layout(title="Portfolio vs Benchmark Performance",
-                                 xaxis_title="Date",
-                                 yaxis_title="Value ($)",
-                                 legend_title="Portfolio",
-                                 height=500)
-                st.plotly_chart(fig)
+                # Compare to benchmark
+                st.subheader("Comparison to Buy & Hold")
+                col1, col2 = st.columns(2)
+                col1.metric("Strategy Return", f"{total_return:.2%}")
+                col2.metric("Benchmark Return", f"{benchmark_return - 1:.2%}")
                 
-                # Performance metrics
-                st.subheader("Performance Metrics")
-                metrics_df = calculate_performance_metrics(performance_df)
-                st.dataframe(metrics_df.style.format({
-                    'Total Return': '{:.2f}%',
-                    'Annualized Return (%)': '{:.2f}%',
-                    'Annualized Volatility (%)': '{:.2f}%',
-                    'Sharpe Ratio': '{:.2f}',
-                    'Max Drawdown (%)': '{:.2f}%'
-                }))
+                # Plot the results
+                fig = make_subplots(rows=2, cols=1, 
+                                   shared_xaxes=True,
+                                   vertical_spacing=0.1,
+                                   subplot_titles=('Portfolio Value', f'{momentum_option} Momentum Factor'))
                 
-                # Holdings history
-                st.subheader("Portfolio Holdings History")
-                holdings_df = pd.DataFrame(index=prices_df.columns)
+                # Portfolio value
+                fig.add_trace(
+                    go.Scatter(x=portfolio_df.index, y=portfolio_df['portfolio_value'], name="Portfolio Value"),
+                    row=1, col=1
+                )
                 
-                for date, stocks in holdings_history.items():
-                    holdings_df[date.strftime('%Y-%m-%d')] = holdings_df.index.isin(stocks)
+                # Momentum indicator
+                momentum_df = df.resample('M').last()
+                fig.add_trace(
+                    go.Scatter(x=momentum_df.index, y=momentum_df[f'momentum_{lookback_period}m_norm'], name=f"{momentum_option} Momentum"),
+                    row=2, col=1
+                )
                 
-                # Convert boolean to markers for better visualization
-                holdings_df = holdings_df.replace({True: '✓', False: ''})
+                fig.update_layout(height=600, width=800)
+                st.plotly_chart(fig, use_container_width=True)
                 
-                st.dataframe(holdings_df)
+                # Display the final portfolio dataframe
+                with st.expander("Portfolio Performance Data"):
+                    st.dataframe(portfolio_df)
             else:
-                st.error("Failed to fetch data for the provided tickers.")
-    
-    # Add instructions
-    with st.expander("Instructions"):
-        st.markdown("""
-        ### How to use this tool:
-        
-        1. **Enter ticker symbols** in the sidebar (comma-separated). These should be valid Yahoo Finance tickers.
-        2. **Select date range** for your backtest.
-        3. **Choose momentum lookback period** - 6 or 12 months.
-        4. **Set rebalance frequency** - how often to update the portfolio (in months).
-        5. **Select top momentum percentage** - what percentage of stocks with the highest momentum to include in the portfolio.
-        6. **Click "Run Backtest"** to see the results.
-        
-        ### Interpretation:
-        - The chart shows the performance of your momentum portfolio vs. an equal-weighted benchmark.
-        - The metrics table provides key performance indicators.
-        - The holdings history shows which stocks were in the portfolio at each rebalance date.
-        """)
+                st.error("No data available for the selected parameters.")
 
 if __name__ == "__main__":
     main()
