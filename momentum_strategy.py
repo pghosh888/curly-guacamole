@@ -16,6 +16,7 @@ def get_stock_data(ticker_list, start_date, end_date):
     """Fetch historical price data for tickers from Yahoo Finance."""
     data = {}
     for ticker in ticker_list:
+        print(ticker)
         try:
             ticker_data = yf.download(ticker, start=start_date, end=end_date)
             if not ticker_data.empty:
