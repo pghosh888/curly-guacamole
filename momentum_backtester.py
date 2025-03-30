@@ -263,7 +263,7 @@ def main():
     
     # Date range
     col1, col2 = st.sidebar.columns(2)
-    start_date = col1.date_input("Start Date", datetime(2018, 1, 1))
+    start_date = col1.date_input("Start Date", datetime(2015, 1, 1))
     end_date = col2.date_input("End Date", datetime.now())
     
     # Lookback period
