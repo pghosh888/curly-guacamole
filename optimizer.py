@@ -402,7 +402,7 @@ elif st.session_state.page == 3:
             
             with st.spinner("Generating efficient frontier..."):
                 # Generate random portfolios for visualization
-                num_portfolios = 5
+                num_portfolios = 500
                 results = np.zeros((3, num_portfolios))
                 weights_record = []
                 
