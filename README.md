@@ -11,3 +11,8 @@ $ uvicorn main:app --reload
 Ctrl + C to stop uvicorn. Type "deactivate" to stop venv
 
 ---
+
+Run portfolio optimizer:
+```
+$ streamlit run optimizer.py
+```
